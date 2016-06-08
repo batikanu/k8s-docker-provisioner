@@ -77,12 +77,12 @@ parameters:
   docker_registry_url:
     type: string
     description: Docker registry url
-    default:
+    default: ""
 
   docker_registry_prefix:
     type: string
     description: Docker registry prefix for k8s images
-    default:
+    default: ""
 
 resources:
 
