@@ -33,7 +33,7 @@ ARCH=${ARCH:-"amd64"}
 # Make sure k8s images are properly set
 ETCD_IMAGE=${ETCD_IMAGE:-gcr.io/google_containers/etcd-amd64:2.2.1}
 FLANNEL_IMAGE=${FLANNEL_IMAGE:-quay.io/coreos/flannel:0.5.5}
-HYPERKUBE_IMAGE=${HYPERKUBE_IMAGE:-gcr.io/google_containers/hyperkube-amd64:v1.2.0}
+HYPERKUBE_IMAGE=${HYPERKUBE_IMAGE:-fest/hyperkube-amd64:v1.2.4}
 ADDONS_IMAGE=${ADDONS_IMAGE:-fest/addons_services:latest}
 PAUSE_IMAGE=${PAUSE_IMAGE:-gcr.io/google_containers/pause:2.0}
 
@@ -202,14 +202,15 @@ start_k8s(){
         -d \
         ${HYPERKUBE_IMAGE} \
         /hyperkube kubelet \
-            --hostname-override=${MASTER_IP} \
             --address="0.0.0.0" \
             --api-servers=http://localhost:8080 \
             --config=/etc/kubernetes/manifests-multi \
             --cluster-dns=10.0.0.10 \
             --cluster-domain=cluster.local \
             --allow-privileged=true --v=2 \
-            --pod-infra-container-image=${PAUSE_IMAGE}
+            --pod-infra-container-image=${PAUSE_IMAGE} \
+            --cloud-provider=openstack \
+            --cloud-config=/etc/kubernetes/provider/openstack.conf
 }
 
 run_addons_container(){

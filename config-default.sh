@@ -19,10 +19,10 @@ MINION_FLAVOR=${MINION_FLAVOR:-m1.small}
 EXTERNAL_NETWORK=${EXTERNAL_NETWORK:-public}
 
 # Image id which will be used for kubernetes stack
-IMAGE_ID=${IMAGE_ID:-23b3ac80-3f08-4c0c-bb99-f323e8aa3565}
+IMAGE_ID=${IMAGE_ID:-81a2b65c-1d14-40f4-92b8-eb7b220eb87a}
 
 # DNS server address
-DNS_SERVER=${DNS_SERVER:-8.8.8.8}
+DNS_SERVER=${DNS_SERVER:-10.140.19.51}
 
 # Public RSA key path
 CLIENT_PUBLIC_KEY_PATH=${CLIENT_PUBLIC_KEY_PATH:-~/.ssh/id_rsa.pub}
