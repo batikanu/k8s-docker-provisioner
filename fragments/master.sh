@@ -33,7 +33,7 @@ ARCH=${ARCH:-"amd64"}
 # Make sure k8s images are properly set
 ETCD_IMAGE=${ETCD_IMAGE:-gcr.io/google_containers/etcd-amd64:2.2.1}
 FLANNEL_IMAGE=${FLANNEL_IMAGE:-quay.io/coreos/flannel:0.5.5}
-HYPERKUBE_IMAGE=${HYPERKUBE_IMAGE:-gcr.io/google_containers/hyperkube-amd64:v1.2.0}
+HYPERKUBE_IMAGE=${HYPERKUBE_IMAGE:-gcr.io/google_containers/hyperkube-amd64:v1.3.0-alpha.5}
 ADDONS_IMAGE=${ADDONS_IMAGE:-fest/addons_services:latest}
 PAUSE_IMAGE=${PAUSE_IMAGE:-gcr.io/google_containers/pause:2.0}
 
@@ -297,8 +297,8 @@ echo "Starting k8s ..."
 start_k8s
 
 echo "Start polling for API service ..."
-set +e
-deploy_add_ons &
-set -e
+#set +e
+#deploy_add_ons &
+#set -e
 
 echo "Master done!"
