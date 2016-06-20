@@ -29,7 +29,7 @@ spec:
               memory: 200Mi
           command:
             - /heapster
-            - --source=kubernetes.summary_api:''
+            - --source=kubernetes:https://kubernetes.default
             - --sink=monasca:?user-id={{ pillar['monasca-user-id'] }}&password={{ pillar['monasca-user-password'] }}&keystone-url={{ pillar['keystone-url'] }}
             - --metric_resolution=60s
           volumeMounts:
