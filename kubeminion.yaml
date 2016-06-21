@@ -132,6 +132,8 @@ resources:
             wc_notify: {get_attr: [minion_wait_handle, curl_cli]}
           template: |
             #!/bin/bash
+            tee /home/minion/worker.sh <<-'EOF'
+            #!/bin/bash
             set -e
             function finish {
               if [ "$?" -ne 0 ]
@@ -142,6 +144,9 @@ resources:
             trap "finish"  EXIT
             source /etc/sysconfig/heat-params
             $WORKER_CONTENT
+            EOF
+            chmod 755 /home/minion/worker.sh
+            /home/minion/worker.sh install
 
   pre_tasks:
     type: OS::Heat::SoftwareConfig
