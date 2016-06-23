@@ -2,10 +2,27 @@
 
 This guide will take you through the steps of deploying Kubernetes to Openstack using docker. The primary concept is described here: [docker-multinode](https://github.com/FujitsuEnablingSoftwareTechnologyGmbH/kubernetes/blob/master/docs/getting-started-guides/docker-multinode/master.md)
 
-This guide assumes you have a working OpenStack cluster.
+## Setup on Bare Metal
 
-## Pre-Requisites
+To setup master in your host 
 
+```
+curl -s https://raw.githubusercontent.com/FujitsuEnablingSoftwareTechnologyGmbH/k8s-docker-provisioner/refactor-structure/master.sh | sudo sh
+```
+
+To setup node in your host
+
+```
+curl -s https://raw.githubusercontent.com/FujitsuEnablingSoftwareTechnologyGmbH/k8s-docker-provisioner/refactor-structure/worker.sh | sudo MASTER_IP=<your-master-ip> sh
+```
+
+
+## Setup on OpenStack
+
+
+### Pre-Requisites
+
+Make sure that you have a working OpenStack cluster before starting.
 
 ### Install OpenStack CLI tools
 
@@ -114,7 +131,6 @@ NAME       STATUS    AGE
 10.0.0.4   Ready     20s
 
 ```
-
 ## Customization
 
 User have possibility to execute custom scripts on master and node before and after provision process.
