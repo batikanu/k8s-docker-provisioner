@@ -229,6 +229,8 @@ resources:
             wc_notify: {get_attr: [master_wait_handle, curl_cli]}
           template: |
             #!/bin/bash
+            tee /home/minion/master.sh <<-'EOF'
+            #!/bin/bash
             set -e
             function finish {
               if [ "$?" -ne 0 ]
@@ -239,6 +241,9 @@ resources:
             trap "finish"  EXIT
             source /etc/sysconfig/heat-params
             $MASTER_CONTENT
+            EOF
+            chmod 755 /home/minion/master.sh
+            /home/minion/master.sh install
 
   kube_master_init:
     type: OS::Heat::MultipartMime

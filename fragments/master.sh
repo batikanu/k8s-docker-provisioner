@@ -19,46 +19,77 @@
 
 set -e
 
-# Make sure docker daemon is running
-if ( ! ps -ef | grep "/usr/bin/docker" | grep -v 'grep' &> /dev/null ); then
-    echo "Docker is not running on this machine!"
-    exit 1
-fi
+START_MODE=$1
 
-# Make sure k8s version env is properly set
-FLANNEL_IPMASQ=${FLANNEL_IPMASQ:-"true"}
-FLANNEL_IFACE=${FLANNEL_IFACE:-"eth0"}
-ARCH=${ARCH:-"amd64"}
+init() {
+	# Make sure docker daemon is running
+    if ( ! ps -ef | grep "/usr/bin/docker" | grep -v 'grep' &> /dev/null ); then
+        echo "Docker is not running on this machine!"
+        exit 1
+    fi
 
-# Make sure k8s images are properly set
-ETCD_IMAGE=${ETCD_IMAGE:-gcr.io/google_containers/etcd-amd64:2.2.1}
-FLANNEL_IMAGE=${FLANNEL_IMAGE:-quay.io/coreos/flannel:0.5.5}
-HYPERKUBE_IMAGE=${HYPERKUBE_IMAGE:-gcr.io/google_containers/hyperkube-amd64:v1.2.0}
-ADDONS_IMAGE=${ADDONS_IMAGE:-fest/addons_services:latest}
-PAUSE_IMAGE=${PAUSE_IMAGE:-gcr.io/google_containers/pause:2.0}
+	# Run as root
+	if [ "$(id -u)" != "0" ]; then
+		echo >&2 "Please run as root"
+		exit 1
+	fi
 
-# Run as root
-if [ "$(id -u)" != "0" ]; then
-    echo >&2 "Please run as root"
-    exit 1
-fi
+	# Make sure master ip is properly set
+	if [ -z ${MASTER_IP} ]; then
+		MASTER_IP=$(hostname -I | awk '{print $1}')
+	fi
 
-# Make sure master ip is properly set
-if [ -z ${MASTER_IP} ]; then
-    MASTER_IP=$(hostname -I | awk '{print $1}')
-fi
+	# Set working mode
+	if [[ -n ${START_MODE} && ${START_MODE} == "install" ]]; then
+		echo "Start k8s cluster in installation mode"
+		RESTART_POLICY="always"
+	else
+		echo "Start k8s cluster in run mode"
+		RESTART_POLICY="no"
+	fi
 
-echo "FLANNEL_IFACE is set to: ${FLANNEL_IFACE}"
-echo "FLANNEL_IPMASQ is set to: ${FLANNEL_IPMASQ}"
-echo "MASTER_IP is set to: ${MASTER_IP}"
-echo "ARCH is set to: ${ARCH}"
+	# Make sure k8s images are properly set
+	ETCD_IMAGE=${ETCD_IMAGE:-gcr.io/google_containers/etcd-amd64:2.2.1}
+	FLANNEL_IMAGE=${FLANNEL_IMAGE:-quay.io/coreos/flannel:0.5.5}
+	HYPERKUBE_IMAGE=${HYPERKUBE_IMAGE:-zreigz/hyperkube-amd64:latest}
+	PAUSE_IMAGE=${PAUSE_IMAGE:-gcr.io/google_containers/pause:2.0}
+
+	# Add docker registry as prefix for k8s images.
+	if [[ -n ${DOCKER_REGISTRY_PREFIX} ]]; then
+		ETCD_IMAGE=${DOCKER_REGISTRY_PREFIX}/${ETCD_IMAGE}
+		FLANNEL_IMAGE=${DOCKER_REGISTRY_PREFIX}/${FLANNEL_IMAGE}
+		HYPERKUBE_IMAGE=${DOCKER_REGISTRY_PREFIX}/${HYPERKUBE_IMAGE}
+		PAUSE_IMAGE=${DOCKER_REGISTRY_PREFIX}/${PAUSE_IMAGE}
+	fi
+
+	# Make sure k8s version env is properly set
+	FLANNEL_IPMASQ=${FLANNEL_IPMASQ:-"true"}
+	FLANNEL_IFACE=${FLANNEL_IFACE:-"eth0"}
+	ARCH=${ARCH:-"amd64"}
+
+	# Paths
+	FLANNEL_SUBNET_DIR=${FLANNEL_SUBNET_DIR:-/run/flannel}
+
+	# Constants
+	TIMEOUT_FOR_SERVICES=20
+
+	# Init variable
+	DOCKER_CONF=""
+	lsb_dist=""
+
+	detect_lsb
+
+	echo "FLANNEL_IFACE is set to: ${FLANNEL_IFACE}"
+	echo "FLANNEL_IPMASQ is set to: ${FLANNEL_IPMASQ}"
+	echo "MASTER_IP is set to: ${MASTER_IP}"
+	echo "ARCH is set to: ${ARCH}"
+	echo "OS distribution is set to: ${lsb_dist}"
+}
 
 # Check if a command is valid
 command_exists() {
     command -v "$@" > /dev/null 2>&1
 }
-
-lsb_dist=""
 
 # Detect the OS distro, we support ubuntu, debian, mint, centos, fedora dist
 detect_lsb() {
@@ -100,14 +131,10 @@ detect_lsb() {
     esac
 }
 
-
-# Start k8s components in containers
-DOCKER_CONF=""
-
 start_k8s(){
     # Start etcd
-    docker -H unix:///var/run/docker-bootstrap.sock run \
-        --restart=on-failure \
+    docker run \
+        --restart=${RESTART_POLICY} \
         --net=host \
         -d \
         ${ETCD_IMAGE} \
@@ -118,71 +145,39 @@ start_k8s(){
 
     sleep 5
     # Set flannel net config
-    docker -H unix:///var/run/docker-bootstrap.sock run \
+    docker run \
         --net=host ${ETCD_IMAGE} \
         etcdctl \
         set /coreos.com/network/config \
             '{ "Network": "10.1.0.0/16", "Backend": {"Type": "vxlan"}}'
 
+    # Make sure there is no subnet.env from previous run.
+    if [[ -f ${FLANNEL_SUBNET_DIR}/subnet.env ]]; then
+		rm ${FLANNEL_SUBNET_DIR}/subnet.env
+    fi
+
     # iface may change to a private network interface, eth0 is for default
-    flannelCID=$(docker -H unix:///var/run/docker-bootstrap.sock run \
-        --restart=on-failure \
+    docker run \
+        --restart=${RESTART_POLICY} \
         -d \
         --net=host \
         --privileged \
         -v /dev/net:/dev/net \
+        -v ${FLANNEL_SUBNET_DIR}:${FLANNEL_SUBNET_DIR} \
         ${FLANNEL_IMAGE} \
         /opt/bin/flanneld \
             --ip-masq="${FLANNEL_IPMASQ}" \
-            --iface="${FLANNEL_IFACE}")
+            --iface="${FLANNEL_IFACE}"
 
-    sleep 8
-
-    # Copy flannel env out and source it on the host
-    docker -H unix:///var/run/docker-bootstrap.sock \
-        cp ${flannelCID}:/run/flannel/subnet.env .
-    source subnet.env
-
-    # Configure docker net settings, then restart it
-    case "${lsb_dist}" in
-        amzn)
-            DOCKER_CONF="/etc/sysconfig/docker"
-            echo "OPTIONS=\"\$OPTIONS --mtu=${FLANNEL_MTU} --bip=${FLANNEL_SUBNET}\"" | tee -a ${DOCKER_CONF}
-            ifconfig docker0 down
-            yum -y -q install bridge-utils && brctl delbr docker0 && service docker restart
-            ;;
-        centos)
-            DOCKER_CONF="/usr/lib/systemd/system/docker.service"
-            sed -i "/^ExecStart=/ s~$~ --mtu=${FLANNEL_MTU} --bip=${FLANNEL_SUBNET}~" ${DOCKER_CONF}
-            sed -i.bak 's/^\(MountFlags=\).*/\1shared/' ${DOCKER_CONF}
-            systemctl daemon-reload
-            if ! command_exists ifconfig; then
-                yum -y -q install net-tools
-            fi
-            ifconfig docker0 down
-            yum -y -q install bridge-utils && brctl delbr docker0 && systemctl restart docker
-            ;;
-        ubuntu|debian)
-            DOCKER_CONF="/etc/default/docker"
-            echo "DOCKER_OPTS=\"\$DOCKER_OPTS --mtu=${FLANNEL_MTU} --bip=${FLANNEL_SUBNET}\"" | tee -a ${DOCKER_CONF}
-            ifconfig docker0 down
-            apt-get install bridge-utils
-            brctl delbr docker0
-            service docker stop
-            while [ `ps aux | grep /usr/bin/docker | grep -v grep | wc -l` -gt 0 ]; do
-                echo "Waiting for docker to terminate"
-                sleep 1
-            done
-            service docker start
-            ;;
-        *)
-            echo "Unsupported operations system ${lsb_dist}"
-            exit 1
-            ;;
-    esac
-
-    # sleep a little bit
-    sleep 5
+	# Wait for the flannel subnet.env file to be created instead of a timeout. This is faster and more reliable
+	local SECONDS=0
+	while [[ ! -f ${FLANNEL_SUBNET_DIR}/subnet.env ]]; do
+		if [[ ${SECONDS} == ${TIMEOUT_FOR_SERVICES} ]]; then
+			echo "flannel failed to start. Exiting..."
+			exit
+		fi
+		sleep 1
+	done
 
     # Start kubelet and then start master components as pods
     mkdir -p /var/lib/kubelet
@@ -195,10 +190,12 @@ start_k8s(){
         --volume=/sys:/sys:ro \
         --volume=/var/lib/docker/:/var/lib/docker:rw \
         --volume=/var/run:/var/run:rw \
+        --volume=/run:/run:rw \
         --volume=/var/lib/kubelet:/var/lib/kubelet:shared \
         --net=host \
         --pid=host \
         --privileged=true \
+        --restart=${RESTART_POLICY} \
         -d \
         ${HYPERKUBE_IMAGE} \
         /hyperkube kubelet \
@@ -209,74 +206,45 @@ start_k8s(){
             --cluster-dns=10.0.0.10 \
             --cluster-domain=cluster.local \
             --allow-privileged=true --v=2 \
-            --pod-infra-container-image=${PAUSE_IMAGE}
+            --pod-infra-container-image=${PAUSE_IMAGE} \
+            --network-plugin=cni \
+            --network-plugin-dir=/etc/cni/net.d
 }
 
-run_addons_container(){
-  docker run \
-      --net=host \
-      -d \
-      ${ADDONS_IMAGE}
-}
-
-set +e
-deploy_add_ons(){
-  # poll the server until it starts up then run addons
-  wait_on_api_server
-  run_addons_container
-}
-
-wait_on_api_server(){
-  # init vars
-  which curl > /dev/null || {
-    echo "curl must be installed"
-    exit 1
-  }
-
-  local URL='http://localhost:8080/healthz'
-  local RESPONSE=$(curl --write-out %{http_code} --silent --output /dev/null $URL )
-  local OK_STATUS=200
-  local TIMEOUT=300 # 5 minutes
-  local INTERVAL=5 # every 5 seconds
-
-  local NEXT_WAIT_TIME=0
-  until [ ${RESPONSE:-0} -eq $OK_STATUS ] || [ $NEXT_WAIT_TIME -eq $TIMEOUT ]; do
-    sleep ${INTERVAL}
-    RESPONSE=$(curl --write-out %{http_code} --silent --output /dev/null $URL )
-    let NEXT_WAIT_TIME=NEXT_WAIT_TIME+INTERVAL
-  done
-
-  if [ ${RESPONSE:-0} -eq $OK_STATUS ]; then
-        echo "Success: Response 200 received from API service ..."
-  elif [ $NEXT_WAIT_TIME -eq $TIMEOUT ]; then
-        echo "Error: Timeout has occurred while trying to contact the API service ..."
-  else
-        echo "Error: API service cannot be reched ..."
-  fi
-}
-
-set_docker_registry(){
-
-	# Add docker registry as prefix for k8s images.
-	if [[ -n ${DOCKER_REGISTRY_PREFIX} ]]; then
-	  ETCD_IMAGE=${DOCKER_REGISTRY_PREFIX}/${ETCD_IMAGE}
-	  FLANNEL_IMAGE=${DOCKER_REGISTRY_PREFIX}/${FLANNEL_IMAGE}
-	  HYPERKUBE_IMAGE=${DOCKER_REGISTRY_PREFIX}/${HYPERKUBE_IMAGE}
-	  ADDONS_IMAGE=${DOCKER_REGISTRY_PREFIX}/${ADDONS_IMAGE}
-	  PAUSE_IMAGE=${DOCKER_REGISTRY_PREFIX}/${PAUSE_IMAGE}
-	fi
-
+configure_docker(){
+	# Configure docker settings, then restart it
     case "${lsb_dist}" in
+        amzn)
+            DOCKER_CONF="/etc/sysconfig/docker"
+            sed -i.bak 's/^\(MountFlags=\).*/\1shared/' $DOCKER_CONF
+            service docker restart
+            ;;
         centos)
-			DOCKER_CONF="/usr/lib/systemd/system/docker.service"
-			DOCKER_BOOTSTRAP_CONF="/usr/lib/systemd/system/docker-bootstrap.service"
-			if [[ -n ${DOCKER_REGISTRY_URL} ]]; then
+            DOCKER_CONF="/usr/lib/systemd/system/docker.service"
+            sed -i.bak 's/^\(MountFlags=\).*/\1shared/' ${DOCKER_CONF}
+            # Add support for docker registry
+            if [[ -n ${DOCKER_REGISTRY_URL} ]]; then
 			  sed -i "/^ExecStart=/ s~$~ --insecure-registry=${DOCKER_REGISTRY_URL}~" ${DOCKER_CONF}
-			  sed -i "/graph=/ s~$~ --insecure-registry=${DOCKER_REGISTRY_URL}~" ${DOCKER_BOOTSTRAP_CONF}
-			  systemctl daemon-reload
-			  systemctl restart docker
-			  systemctl restart docker-bootstrap
 			fi
+            systemctl daemon-reload
+            systemctl restart docker
+            ;;
+        ubuntu|debian)
+            if command_exists systemctl; then
+              DOCKER_CONF=$(systemctl cat docker | head -1 | awk '{print $2}')
+              sed -i.bak 's/^\(MountFlags=\).*/\1shared/' $DOCKER_CONF
+              systemctl daemon-reload
+              systemctl restart docker
+            else
+              DOCKER_CONF="/etc/default/docker"
+              sed -i.bak 's/^\(MountFlags=\).*/\1shared/' $DOCKER_CONF
+              service docker stop
+              while [ `ps aux | grep /usr/bin/docker | grep -v grep | wc -l` -gt 0 ]; do
+                 echo "Waiting for docker to terminate"
+                 sleep 1
+              done
+              service docker start
+            fi
             ;;
         *)
             echo "Unsupported operations system ${lsb_dist}"
@@ -287,18 +255,15 @@ set_docker_registry(){
 
 set -e
 
-echo "Detecting your OS distro ..."
-detect_lsb
+echo "Checking prerequisites & initialize variable ..."
+init
 
-echo "Set docker registry"
-set_docker_registry
+echo "Configure docker ..."
+configure_docker
+
+sleep 5
 
 echo "Starting k8s ..."
 start_k8s
-
-echo "Start polling for API service ..."
-set +e
-deploy_add_ons &
-set -e
 
 echo "Master done!"
