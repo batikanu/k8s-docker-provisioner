@@ -128,7 +128,7 @@ resources:
       config:
         str_replace:
           params:
-            "$WORKER_CONTENT": {get_file: fragments/worker.sh}
+            "$WORKER_CONTENT": {get_file: worker.sh}
             wc_notify: {get_attr: [minion_wait_handle, curl_cli]}
           template: |
             #!/bin/bash

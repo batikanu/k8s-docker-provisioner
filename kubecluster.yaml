@@ -225,7 +225,7 @@ resources:
       config:
         str_replace:
           params:
-            "$MASTER_CONTENT": {get_file: fragments/master.sh}
+            "$MASTER_CONTENT": {get_file: master.sh}
             wc_notify: {get_attr: [master_wait_handle, curl_cli]}
           template: |
             #!/bin/bash

@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# A script to setup the k8s master in docker containers.
+# A script to the k8s worker in docker containers.
 # Authors @wizard_cxy @resouer
 
 set -e
@@ -23,10 +23,10 @@ START_MODE=$1
 
 init() {
 	# Make sure docker daemon is running
-    if ( ! ps -ef | grep "/usr/bin/docker" | grep -v 'grep' &> /dev/null ); then
-        echo "Docker is not running on this machine!"
-        exit 1
-    fi
+	if ( ! ps -ef | grep "/usr/bin/docker" | grep -v 'grep' &> /dev/null  ); then
+		echo "Docker is not running on this machine!"
+		exit 1
+	fi
 
 	# Run as root
 	if [ "$(id -u)" != "0" ]; then
@@ -36,7 +36,13 @@ init() {
 
 	# Make sure master ip is properly set
 	if [ -z ${MASTER_IP} ]; then
-		MASTER_IP=$(hostname -I | awk '{print $1}')
+		echo "Please export MASTER_IP in your env"
+		exit 1
+	fi
+
+	# Make sure node ip is properly set
+	if [ -z ${NODE_IP} ]; then
+		NODE_IP=$(hostname -I | awk '{print $1}')
 	fi
 
 	# Set working mode
@@ -49,22 +55,20 @@ init() {
 	fi
 
 	# Make sure k8s images are properly set
-	ETCD_IMAGE=${ETCD_IMAGE:-gcr.io/google_containers/etcd-amd64:2.2.1}
-	FLANNEL_IMAGE=${FLANNEL_IMAGE:-quay.io/coreos/flannel:0.5.5}
-	HYPERKUBE_IMAGE=${HYPERKUBE_IMAGE:-zreigz/hyperkube-amd64:latest}
+	HYPERKUBE_IMAGE=${HYPERKUBE_IMAGE:-fest/hyperkube-amd64:latest}
 	PAUSE_IMAGE=${PAUSE_IMAGE:-gcr.io/google_containers/pause:2.0}
+	FLANNEL_IMAGE=${FLANNEL_IMAGE:-quay.io/coreos/flannel:0.5.5}
 
 	# Add docker registry as prefix for k8s images.
 	if [[ -n ${DOCKER_REGISTRY_PREFIX} ]]; then
-		ETCD_IMAGE=${DOCKER_REGISTRY_PREFIX}/${ETCD_IMAGE}
-		FLANNEL_IMAGE=${DOCKER_REGISTRY_PREFIX}/${FLANNEL_IMAGE}
 		HYPERKUBE_IMAGE=${DOCKER_REGISTRY_PREFIX}/${HYPERKUBE_IMAGE}
 		PAUSE_IMAGE=${DOCKER_REGISTRY_PREFIX}/${PAUSE_IMAGE}
+		FLANNEL_IMAGE=${DOCKER_REGISTRY_PREFIX}/${FLANNEL_IMAGE}
 	fi
 
 	# Make sure k8s version env is properly set
-	FLANNEL_IPMASQ=${FLANNEL_IPMASQ:-"true"}
 	FLANNEL_IFACE=${FLANNEL_IFACE:-"eth0"}
+	FLANNEL_IPMASQ=${FLANNEL_IPMASQ:-"true"}
 	ARCH=${ARCH:-"amd64"}
 
 	# Paths
@@ -82,6 +86,7 @@ init() {
 	echo "FLANNEL_IFACE is set to: ${FLANNEL_IFACE}"
 	echo "FLANNEL_IPMASQ is set to: ${FLANNEL_IPMASQ}"
 	echo "MASTER_IP is set to: ${MASTER_IP}"
+	echo "NODE_IP is set to: ${NODE_IP}"
 	echo "ARCH is set to: ${ARCH}"
 	echo "OS distribution is set to: ${lsb_dist}"
 }
@@ -93,14 +98,13 @@ command_exists() {
 
 # Detect the OS distro, we support ubuntu, debian, mint, centos, fedora dist
 detect_lsb() {
-    # TODO: remove this when ARM support is fully merged
     case "$(uname -m)" in
         *64)
             ;;
-         *)
-            echo "Error: We currently only support 64-bit platforms."
-            exit 1
-            ;;
+        *)
+	        echo "Error: We currently only support 64-bit platforms."
+	        exit 1
+	        ;;
     esac
 
     if command_exists lsb_release; then
@@ -131,35 +135,16 @@ detect_lsb() {
     esac
 }
 
-start_k8s(){
-    # Start etcd
-    docker run \
-        --restart=${RESTART_POLICY} \
-        --net=host \
-        -d \
-        ${ETCD_IMAGE} \
-        /usr/local/bin/etcd \
-            --listen-client-urls=http://127.0.0.1:4001,http://${MASTER_IP}:4001 \
-            --advertise-client-urls=http://${MASTER_IP}:4001 \
-            --data-dir=/var/etcd/data
-
-    sleep 5
-    # Set flannel net config
-    docker run \
-        --net=host ${ETCD_IMAGE} \
-        etcdctl \
-        set /coreos.com/network/config \
-            '{ "Network": "10.1.0.0/16", "Backend": {"Type": "vxlan"}}'
-
+# Start k8s components in containers
+start_k8s() {
     # Make sure there is no subnet.env from previous run.
     if [[ -f ${FLANNEL_SUBNET_DIR}/subnet.env ]]; then
 		rm ${FLANNEL_SUBNET_DIR}/subnet.env
     fi
-
-    # iface may change to a private network interface, eth0 is for default
+	# Start flannel
     docker run \
-        --restart=${RESTART_POLICY} \
         -d \
+        --restart=${RESTART_POLICY} \
         --net=host \
         --privileged \
         -v /dev/net:/dev/net \
@@ -167,6 +152,7 @@ start_k8s(){
         ${FLANNEL_IMAGE} \
         /opt/bin/flanneld \
             --ip-masq="${FLANNEL_IPMASQ}" \
+            --etcd-endpoints=http://${MASTER_IP}:4001 \
             --iface="${FLANNEL_IFACE}"
 
 	# Wait for the flannel subnet.env file to be created instead of a timeout. This is faster and more reliable
@@ -179,7 +165,6 @@ start_k8s(){
 		sleep 1
 	done
 
-    # Start kubelet and then start master components as pods
     mkdir -p /var/lib/kubelet
     mount --bind /var/lib/kubelet /var/lib/kubelet
     mount --make-shared /var/lib/kubelet
@@ -199,13 +184,12 @@ start_k8s(){
         -d \
         ${HYPERKUBE_IMAGE} \
         /hyperkube kubelet \
-            --hostname-override=${MASTER_IP} \
+            --hostname-override=${NODE_IP} \
             --address="0.0.0.0" \
-            --api-servers=http://localhost:8080 \
-            --config=/etc/kubernetes/manifests-multi \
+            --api-servers=http://${MASTER_IP}:8080 \
             --cluster-dns=10.0.0.10 \
             --cluster-domain=cluster.local \
-            --allow-privileged=true --v=2 \
+            --allow-privileged=true --v=2  \
             --pod-infra-container-image=${PAUSE_IMAGE} \
             --network-plugin=cni \
             --network-plugin-dir=/etc/cni/net.d
@@ -253,12 +237,10 @@ configure_docker(){
     esac
 }
 
-set -e
-
 echo "Checking prerequisites & initialize variable ..."
 init
 
-echo "Configure docker ..."
+echo "Set docker registry"
 configure_docker
 
 sleep 5
@@ -266,4 +248,4 @@ sleep 5
 echo "Starting k8s ..."
 start_k8s
 
-echo "Master done!"
+echo "Worker done!"
